@@ -1,0 +1,1 @@
+symlink to custom dir to run mjpython (mujuco) ```mkdir -p .venv/lib && ln -sf ~/.local/share/uv/python/cpython-3.10.19-macos-aarch64-none/lib/libpython3.10.dylib .venv/lib/libpython3.10.dylib```
