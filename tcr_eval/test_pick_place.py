@@ -199,11 +199,13 @@ def evaluate_twoarmlift(
 
         obs = env.reset()
         
-        # Adjust agentview camera: Set to 67° vertical FOV
+        # Adjust agentview camera: More top-down view
         agentview_cam_id = env.sim.model.camera_name2id("agentview")
-        env.sim.model.cam_pos[agentview_cam_id][0] = 1.2  # x position (further back)
-        env.sim.model.cam_pos[agentview_cam_id][2] = 1.5  # z position (slightly higher)
-        env.sim.model.cam_fovy[agentview_cam_id] = 67.0   # vertical FOV
+        env.sim.model.cam_pos[agentview_cam_id][0] = 0.5   # x: slightly forward from center
+        env.sim.model.cam_pos[agentview_cam_id][1] = 0.0   # y: centered
+        env.sim.model.cam_pos[agentview_cam_id][2] = 1.4   # z: moderate height
+        env.sim.model.cam_fovy[agentview_cam_id] = 50.0    # moderate FOV
+        # Don't change quaternion - use default orientation
         env.sim.forward()
         
         episode_reward = 0
