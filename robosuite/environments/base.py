@@ -600,6 +600,11 @@ class MujocoEnv(metaclass=EnvMeta):
             if old_path is None:
                 continue
 
+            # Skip paths that are already absolute and point to robosuite_models
+            # (these are correctly resolved and shouldn't be rewritten)
+            if old_path.startswith("/") and "robosuite_models" in old_path:
+                continue
+
             old_path_split = old_path.split("/")
             # maybe replace all paths to robosuite assets
             check_lst = [loc for loc, val in enumerate(old_path_split) if val == "robosuite"]

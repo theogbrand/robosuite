@@ -1,8 +1,9 @@
 import numpy as np
+import cv2
 import robosuite as suite
 
-def evaluate_pickplace(n_episodes=20, horizon=500):
-    """Evaluate PickPlace with fixed seeds for reproducibility"""
+def evaluate_twoarmlift(n_episodes=20, horizon=500):
+    """Evaluate TwoArmLift with Baxter bimanual robot for reproducibility"""
     
     results = {
         'episode_rewards': [],
@@ -13,14 +14,15 @@ def evaluate_pickplace(n_episodes=20, horizon=500):
     
     for ep in range(n_episodes):
         env = suite.make(
-            env_name="PickPlace",
-            robots="Panda",
-            has_renderer=False,
-            has_offscreen_renderer=True,          # Required for camera observations
+            env_name="TwoArmLift",
+            robots="Aloha",                        # Bimanual robot (Aloha requires robosuite_models)
+            env_configuration="single-robot",       # Use bimanual robot
+            has_renderer=False,                    # Disable live viewer (macOS compat)
+            has_offscreen_renderer=True,           # Required for camera observations
             use_camera_obs=True,                   # Enable camera observations
-            camera_names=["agentview", "robot0_eye_in_hand"],  # Top view + wrist camera
-            camera_heights=256,
-            camera_widths=256,
+            camera_names=["agentview", "robot0_wrist_cam_right", "robot0_wrist_cam_left"],
+            camera_heights=512,
+            camera_widths=512,
             camera_depths=False,                   # Set to True for RGB-D
             use_object_obs=True,
             reward_shaping=True,
@@ -29,18 +31,25 @@ def evaluate_pickplace(n_episodes=20, horizon=500):
         )
 
         obs = env.reset()
-        
-        # Extract camera observations
-        agentview_img = obs["agentview_image"]              # Shape: (256, 256, 3)
-        wrist_img = obs["robot0_eye_in_hand_image"]         # Shape: (256, 256, 3)
-        
         episode_reward = 0
         
         for step in range(horizon):
-            # Replace with your policy
+            # Get camera images for VLA policy
+            agentview_img = obs["agentview_image"]
+            right_wrist_img = obs["robot0_wrist_cam_right_image"]
+            left_wrist_img = obs["robot0_wrist_cam_left_image"]
+            
+            # TODO: Replace with VLA policy server call
+            # action = vla_policy.predict(agentview_img, right_wrist_img, left_wrist_img)
             action = np.random.randn(*env.action_spec[0].shape) * 0.1
+            
             obs, reward, done, info = env.step(action)
             episode_reward += reward
+            
+            # Display with OpenCV (BGR format, flip vertically)
+            cv2.imshow("agentview", cv2.cvtColor(agentview_img[::-1], cv2.COLOR_RGB2BGR))
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
             
         # Check success using internal method
         success = env._check_success()
@@ -49,9 +58,9 @@ def evaluate_pickplace(n_episodes=20, horizon=500):
         results['success_rate'].append(int(success))
         
         print(f"Episode {ep+1}/{n_episodes}: Reward={episode_reward:.2f}, Success={success}")
-        print(f"  Camera shapes - Agentview: {agentview_img.shape}, Wrist: {wrist_img.shape}")
         
         env.close()
+        cv2.destroyAllWindows()
     
     results['avg_reward'] = np.mean(results['episode_rewards'])
     results['avg_success'] = np.mean(results['success_rate'])
@@ -65,4 +74,4 @@ def evaluate_pickplace(n_episodes=20, horizon=500):
     return results
 
 if __name__ == "__main__":
-    evaluate_pickplace(n_episodes=20, horizon=500)
+    evaluate_twoarmlift(n_episodes=20, horizon=500)
