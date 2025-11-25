@@ -16,15 +16,24 @@ def evaluate_pickplace(n_episodes=20, horizon=500):
             env_name="PickPlace",
             robots="Panda",
             has_renderer=False,
-            has_offscreen_renderer=False,
-            use_camera_obs=False,
+            has_offscreen_renderer=True,          # Required for camera observations
+            use_camera_obs=True,                   # Enable camera observations
+            camera_names=["agentview", "robot0_eye_in_hand"],  # Top view + wrist camera
+            camera_heights=256,
+            camera_widths=256,
+            camera_depths=False,                   # Set to True for RGB-D
             use_object_obs=True,
             reward_shaping=True,
             horizon=horizon,
             seed=ep  # deterministic test cases
         )
-        
+
         obs = env.reset()
+        
+        # Extract camera observations
+        agentview_img = obs["agentview_image"]              # Shape: (256, 256, 3)
+        wrist_img = obs["robot0_eye_in_hand_image"]         # Shape: (256, 256, 3)
+        
         episode_reward = 0
         
         for step in range(horizon):
@@ -40,6 +49,7 @@ def evaluate_pickplace(n_episodes=20, horizon=500):
         results['success_rate'].append(int(success))
         
         print(f"Episode {ep+1}/{n_episodes}: Reward={episode_reward:.2f}, Success={success}")
+        print(f"  Camera shapes - Agentview: {agentview_img.shape}, Wrist: {wrist_img.shape}")
         
         env.close()
     
