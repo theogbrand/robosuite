@@ -1,8 +1,8 @@
 """
-TwoArmLift evaluation with Pi0.5 policy via openpi WebSocket client.
+TwoArmLift evaluation with Pi0.5 policy via Modal-deployed OpenPI server.
 
 This script evaluates the TwoArmLift task using a bimanual ALOHA robot,
-connecting to a remote Pi0.5 policy server via WebSocket.
+connecting to a Modal-deployed Pi0.5 policy server via WebSocket.
 
 IMPORTANT: Joint Ordering
     - OpenPI ALOHA expects: [left_arm(6), left_grip(1), right_arm(6), right_grip(1)]
@@ -11,12 +11,11 @@ IMPORTANT: Joint Ordering
     - If actions are mirrored or robot behaves incorrectly, verify joint ordering!
 
 Usage:
-    # Start Pi0.5 server (on GPU machine):
-    cd /path/to/openpi
-    uv run scripts/serve_policy.py --env ALOHA --port 8000
+    # With default Modal endpoint and model:
+    python test_pick_place.py --n-episodes 10
 
-    # Run evaluation (simulation machine):
-    python test_pick_place.py --policy-host <server_ip> --policy-port 8000
+    # Override Modal endpoint or model config:
+    python test_pick_place.py --modal-url <url> --modal-hf-repo-id <repo> --n-episodes 20
 """
 
 import argparse
@@ -27,19 +26,21 @@ import cv2
 import numpy as np
 import robosuite as suite
 
-try:
-    from openpi_client import image_tools
-    from openpi_client import websocket_client_policy
-except ImportError as e:
-    raise ImportError(
-        "Missing openpi_client. Install with:\n"
-        "  cd /path/to/openpi/packages/openpi-client && pip install -e .\n"
-        "  or: pip install websockets msgpack numpy"
-    ) from e
+from utils.modal_client import ModalClientPolicy
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# Modal policy server configuration
+MODAL_URL = "https://griffin-labs--openpi-policy-server-endpoint.modal.run/"
+MODAL_HF_REPO_ID = "griffinlabs/pi05_412ep_pytorch"
+MODAL_FOLDER_PATH = "pi05_tcr_full_finetune_pytorch/pi05_412ep/20000"
+MODAL_CONFIG_NAME = "pi05_tcr_full_finetune_pytorch"
+MODAL_PROMPT = "pick up the object"
+MODAL_DATASET_REPO_ID = "griffinlabs/tcr-data"
+MODAL_STATS_JSON_PATH = "./norm_stats.json"
 
 
 def make_aloha_obs(robosuite_obs, task_description, resize=224):
@@ -64,12 +65,12 @@ def make_aloha_obs(robosuite_obs, task_description, resize=224):
         }
     """
     
-    def process_img(img):
-        """Convert HWC uint8 -> resize -> CHW uint8."""
-        img = image_tools.convert_to_uint8(
-            image_tools.resize_with_pad(img, resize, resize)
-        )
-        return np.transpose(img, (2, 0, 1))  # HWC -> CHW
+    # def process_img(img):
+    #     """Convert HWC uint8 -> resize -> CHW uint8."""
+    #     img = image_tools.convert_to_uint8(
+    #         image_tools.resize_with_pad(img, resize, resize)
+    #     )
+    #     return np.transpose(img, (2, 0, 1))  # HWC -> CHW
     
     # Extract joint positions
     # robosuite Aloha robot provides:
@@ -96,9 +97,9 @@ def make_aloha_obs(robosuite_obs, task_description, resize=224):
     return {
         "state": state,
         "images": {
-            "cam_high": process_img(robosuite_obs["agentview_image"]),
-            "cam_left_wrist": process_img(robosuite_obs["robot0_wrist_cam_left_image"]),
-            "cam_right_wrist": process_img(robosuite_obs["robot0_wrist_cam_right_image"]),
+            "cam_high": robosuite_obs["agentview_image"],
+            "cam_left_wrist": robosuite_obs["robot0_wrist_cam_left_image"],
+            "cam_right_wrist": robosuite_obs["robot0_wrist_cam_right_image"],
         },
         "prompt": task_description,
     }
@@ -107,23 +108,25 @@ def make_aloha_obs(robosuite_obs, task_description, resize=224):
 def evaluate_twoarmlift(
     n_episodes: int = 20,
     horizon: int = 500,
-    policy_host: str = "localhost",
-    policy_port: int = 8000,
+    modal_url: str = MODAL_URL,
+    modal_hf_repo_id: str = MODAL_HF_REPO_ID,
+    modal_folder_path: str = MODAL_FOLDER_PATH,
+    modal_config_name: str = MODAL_CONFIG_NAME,
     task_description: str = "Lift the pot using both arms",
-    use_policy: bool = True,
     show_images: bool = True,
     replan_steps: int = 5,
 ):
     """
-    Evaluate TwoArmLift with Pi0.5 ALOHA policy.
+    Evaluate TwoArmLift with Pi0.5 ALOHA policy via Modal endpoint.
     
     Args:
         n_episodes: Number of evaluation episodes
         horizon: Maximum steps per episode
-        policy_host: Pi0.5 policy server hostname
-        policy_port: Pi0.5 policy server port
+        modal_url: Modal endpoint URL (HTTPS, will be converted to WSS)
+        modal_hf_repo_id: HuggingFace repo ID for the model
+        modal_folder_path: Path to checkpoint folder within the HF repo
+        modal_config_name: Config name to use for loading the policy
         task_description: Language instruction for the task
-        use_policy: If True, use policy server; if False, use random actions
         show_images: If True, display camera images with OpenCV
         replan_steps: Number of actions to execute before re-inference
     """
@@ -134,12 +137,24 @@ def evaluate_twoarmlift(
         'avg_success': 0.0
     }
     
-    # Initialize policy client if using server
-    policy = None
-    if use_policy:
-        logger.info(f"Connecting to Pi0.5 policy server at {policy_host}:{policy_port}...")
-        policy = websocket_client_policy.WebsocketClientPolicy(host=policy_host, port=policy_port)
-        logger.info(f"Connected! Server metadata: {policy.get_server_metadata()}")
+    # Convert HTTP URL to WebSocket URL
+    ws_url = modal_url.replace("https://", "wss://").replace("http://", "ws://")
+    if not ws_url.endswith("/ws"):
+        ws_url = ws_url.rstrip("/") + "/ws"
+    
+    logger.info(f"Connecting to Modal policy at {ws_url}...")
+    logger.info(f"Model: {modal_config_name} from {modal_hf_repo_id}/{modal_folder_path}")
+    
+    policy = ModalClientPolicy(
+        url=ws_url,
+        hf_repo_id=modal_hf_repo_id,
+        folder_path=modal_folder_path,
+        config_name=modal_config_name,
+        prompt=MODAL_PROMPT,
+        dataset_repo_id=MODAL_DATASET_REPO_ID,
+        stats_json_path=MODAL_STATS_JSON_PATH,
+    )
+    logger.info(f"Connected! Policy metadata: {policy.get_policy_metadata()}")
     
     for ep in range(n_episodes):
         env = suite.make(
@@ -174,28 +189,25 @@ def evaluate_twoarmlift(
         logger.info(f"Episode {ep+1}/{n_episodes}: Starting...")
         
         for step in range(horizon):
-            # Get action from policy server or use random
-            if policy is not None:
-                try:
-                    if not action_plan:
-                        # Finished executing previous action chunk -- compute new chunk
-                        obs_dict = make_aloha_obs(obs, task_description)
-                        action_response = policy.infer(obs_dict)
-                        action_chunk = action_response["actions"]  # (chunk_size, 14)
-                        
-                        # Take only replan_steps actions from the chunk
-                        num_actions = min(replan_steps, len(action_chunk))
-                        action_plan.extend(action_chunk[:num_actions])
-                        
-                        if step == 0:
-                            logger.info(f"  Received action chunk: shape={action_chunk.shape}")
+            # Get action from policy server
+            try:
+                if not action_plan:
+                    # Finished executing previous action chunk -- compute new chunk
+                    obs_dict = make_aloha_obs(obs, task_description)
+                    action_response = policy.infer(obs_dict)
+                    action_chunk = action_response["actions"]  # (chunk_size, 14)
                     
-                    action = action_plan.popleft()  # (14,) joint-space action
+                    # Take only replan_steps actions from the chunk
+                    num_actions = min(replan_steps, len(action_chunk))
+                    action_plan.extend(action_chunk[:num_actions])
                     
-                except Exception as e:
-                    logger.error(f"  Policy error at step {step}: {e}")
-                    action = np.random.randn(*env.action_spec[0].shape) * 0.1
-            else:
+                    if step == 0:
+                        logger.info(f"  Received action chunk: shape={action_chunk.shape}")
+                
+                action = action_plan.popleft()  # (14,) joint-space action
+                
+            except Exception as e:
+                logger.error(f"  Policy error at step {step}: {e}")
                 action = np.random.randn(*env.action_spec[0].shape) * 0.1
             
             obs, reward, done, info = env.step(action)
@@ -242,29 +254,27 @@ def evaluate_twoarmlift(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Evaluate TwoArmLift with Pi0.5 policy server",
+        description="Evaluate TwoArmLift with Modal-deployed Pi0.5 policy",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # With Pi0.5 server running on localhost
+  # With default Modal endpoint and model
   python test_pick_place.py --n-episodes 10
   
-  # With Pi0.5 server on remote GPU machine
-  python test_pick_place.py --policy-host 192.168.1.100 --n-episodes 20
-  
-  # Without policy (random actions, for testing)
-  python test_pick_place.py --no-policy --n-episodes 5
+  # Override Modal endpoint or model config
+  python test_pick_place.py --modal-url <url> --modal-hf-repo-id <repo> --n-episodes 20
         """
     )
     parser.add_argument("--n-episodes", type=int, default=20, help="Number of episodes")
     parser.add_argument("--horizon", type=int, default=500, help="Max steps per episode")
-    parser.add_argument("--policy-host", type=str, default="localhost", help="Policy server host")
-    parser.add_argument("--policy-port", type=int, default=8000, help="Policy server port")
+    parser.add_argument("--modal-url", type=str, default=MODAL_URL, help=f"Modal endpoint URL (default: {MODAL_URL})")
+    parser.add_argument("--modal-hf-repo-id", type=str, default=MODAL_HF_REPO_ID, help=f"HuggingFace repo ID (default: {MODAL_HF_REPO_ID})")
+    parser.add_argument("--modal-folder-path", type=str, default=MODAL_FOLDER_PATH, help="Checkpoint folder path in HF repo")
+    parser.add_argument("--modal-config-name", type=str, default=MODAL_CONFIG_NAME, help="Config name for policy loading")
     parser.add_argument(
         "--task-description", type=str, default="Lift the pot using both arms",
         help="Language instruction for the task"
     )
-    parser.add_argument("--no-policy", action="store_true", help="Use random actions instead of policy")
     parser.add_argument("--no-display", action="store_true", help="Disable image display")
     parser.add_argument("--replan-steps", type=int, default=5, help="Actions to execute before re-inference")
     return parser.parse_args()
@@ -275,10 +285,11 @@ if __name__ == "__main__":
     evaluate_twoarmlift(
         n_episodes=args.n_episodes,
         horizon=args.horizon,
-        policy_host=args.policy_host,
-        policy_port=args.policy_port,
+        modal_url=args.modal_url,
+        modal_hf_repo_id=args.modal_hf_repo_id,
+        modal_folder_path=args.modal_folder_path,
+        modal_config_name=args.modal_config_name,
         task_description=args.task_description,
-        use_policy=not args.no_policy,
         show_images=not args.no_display,
         replan_steps=args.replan_steps,
     )
