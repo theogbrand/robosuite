@@ -65,12 +65,22 @@ def make_aloha_obs(robosuite_obs, task_description, resize=224):
         }
     """
     
-    # def process_img(img):
-    #     """Convert HWC uint8 -> resize -> CHW uint8."""
-    #     img = image_tools.convert_to_uint8(
-    #         image_tools.resize_with_pad(img, resize, resize)
-    #     )
-    #     return np.transpose(img, (2, 0, 1))  # HWC -> CHW
+    def process_img(img):
+        """Convert HWC uint8 -> resize -> CHW uint8."""
+        # Resize with padding to maintain aspect ratio
+        h, w = img.shape[:2]
+        scale = min(resize/h, resize/w)
+        new_h, new_w = int(h*scale), int(w*scale)
+        
+        resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        
+        # Pad to square
+        padded = np.zeros((resize, resize, 3), dtype=np.uint8)
+        y_offset = (resize - new_h) // 2
+        x_offset = (resize - new_w) // 2
+        padded[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        
+        return np.transpose(padded, (2, 0, 1))  # HWC -> CHW
     
     # Extract joint positions
     # robosuite Aloha robot provides:
@@ -94,12 +104,18 @@ def make_aloha_obs(robosuite_obs, task_description, resize=224):
         right_gripper[:1],       # right gripper (take first joint)
     ]).astype(np.float32)
     
+    logging.info(f"state: {state.shape}")
+    logging.info(f"images (original): {robosuite_obs['agentview_image'].shape}")
+    logging.info(f"images (original): {robosuite_obs['robot0_wrist_cam_left_image'].shape}")
+    logging.info(f"images (original): {robosuite_obs['robot0_wrist_cam_right_image'].shape}")
+    logging.info(f"prompt: {task_description}")
+    
     return {
         "state": state,
         "images": {
-            "cam_high": robosuite_obs["agentview_image"],
-            "cam_left_wrist": robosuite_obs["robot0_wrist_cam_left_image"],
-            "cam_right_wrist": robosuite_obs["robot0_wrist_cam_right_image"],
+            "cam_high": process_img(robosuite_obs["agentview_image"]),
+            "cam_left_wrist": process_img(robosuite_obs["robot0_wrist_cam_left_image"]),
+            "cam_right_wrist": process_img(robosuite_obs["robot0_wrist_cam_right_image"]),
         },
         "prompt": task_description,
     }

@@ -65,6 +65,7 @@ class ModalClientPolicy:
         self._prompt = prompt
         self._dataset_repo_id = dataset_repo_id
         self._stats_json_path = stats_json_path
+        self._connect_timeout = connect_timeout
         
         # Initialize connection and load policy
         logger.info(f"Connecting to Modal endpoint at {self._url}...")
@@ -80,6 +81,8 @@ class ModalClientPolicy:
             max_size=None,
             open_timeout=timeout,
             close_timeout=timeout,
+            ping_interval=20,   # Keep Modal load balancer alive
+            ping_timeout=30,
         )
         
         # PHASE 1: Receive initial empty metadata from server
@@ -117,7 +120,7 @@ class ModalClientPolicy:
         logger.info(f"Received policy metadata: {self._policy_metadata}")
     
     def infer(self, obs: dict[str, Any]) -> dict[str, Any]:
-        """Run inference on an observation.
+        """Run inference with automatic reconnection on connection loss.
         
         Args:
             obs: Observation dictionary with keys like 'state', 'images', etc.
@@ -125,23 +128,32 @@ class ModalClientPolicy:
         Returns:
             Action dictionary with keys like 'actions', 'server_timing', etc.
         """
-        if self._ws is None:
-            raise RuntimeError("Not connected to server")
-        
-        # Send observation
-        data = self._packer.pack(obs)
-        self._ws.send(data)
-        
-        # Receive action
-        response = self._ws.recv()
-        
-        # Check if we got an error message (text traceback)
-        if isinstance(response, str):
-            error_msg = f"Error in inference server:\n{response}"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
-        
-        return msgpack_numpy.unpackb(response)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if self._ws is None:
+                    raise RuntimeError("Not connected to server")
+                
+                data = self._packer.pack(obs)
+                self._ws.send(data)
+                response = self._ws.recv()
+                
+                if isinstance(response, str):
+                    error_msg = f"Error in inference server:\n{response}"
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg)
+                
+                return msgpack_numpy.unpackb(response)
+                
+            except (websockets.exceptions.ConnectionClosed, 
+                    websockets.exceptions.ConnectionClosedError,
+                    websockets.exceptions.ConnectionClosedOK) as e:
+                logger.warning(f"Connection lost (attempt {attempt+1}/{max_retries}): {e}")
+                self._ws = None
+                if attempt == max_retries - 1:
+                    raise RuntimeError(f"Failed to reconnect after {max_retries} attempts") from e
+                logger.info("Reconnecting to Modal endpoint...")
+                self._connect_and_initialize(self._connect_timeout)
     
     def get_policy_metadata(self) -> dict:
         """Get the policy metadata received during initialization."""
