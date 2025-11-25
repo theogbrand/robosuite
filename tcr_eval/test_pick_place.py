@@ -45,7 +45,7 @@ MODAL_STATS_JSON_PATH = "./norm_stats.json"
 
 def make_aloha_obs(robosuite_obs, task_description, resize=224):
     """
-    Convert robosuite observation to openpi ALOHA format.
+    Convert robosuite observation to openpi TCR format.
     
     Args:
         robosuite_obs: Raw observation dict from robosuite env
@@ -53,20 +53,21 @@ def make_aloha_obs(robosuite_obs, task_description, resize=224):
         resize: Target image size (default: 224)
         
     Returns:
-        Dictionary in openpi ALOHA format:
+        Dictionary in openpi TCR format:
         {
             "state": (14,) [left_arm(6), left_grip(1), right_arm(6), right_grip(1)],
             "images": {
-                "cam_high": (3, 224, 224) CHW uint8,
-                "cam_left_wrist": (3, 224, 224) CHW uint8,
-                "cam_right_wrist": (3, 224, 224) CHW uint8,
+                "top": (224, 224, 3) HWC uint8,
+                "front": (224, 224, 3) HWC uint8,
+                "left": (224, 224, 3) HWC uint8,
+                "right": (224, 224, 3) HWC uint8,
             },
             "prompt": str,
         }
     """
     
     def process_img(img):
-        """Convert HWC uint8 -> resize -> CHW uint8."""
+        """Convert HWC uint8 -> resize -> HWC uint8 (keep HWC for TCR)."""
         # Resize with padding to maintain aspect ratio
         h, w = img.shape[:2]
         scale = min(resize/h, resize/w)
@@ -80,7 +81,7 @@ def make_aloha_obs(robosuite_obs, task_description, resize=224):
         x_offset = (resize - new_w) // 2
         padded[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
         
-        return np.transpose(padded, (2, 0, 1))  # HWC -> CHW
+        return padded  # Keep HWC format for TCR
     
     # Extract joint positions
     # robosuite Aloha robot provides:
@@ -110,12 +111,18 @@ def make_aloha_obs(robosuite_obs, task_description, resize=224):
     logging.info(f"images (original): {robosuite_obs['robot0_wrist_cam_right_image'].shape}")
     logging.info(f"prompt: {task_description}")
     
+    # TCR camera mapping (4 cameras required):
+    # - top: overhead view (agentview)
+    # - front: front view (use agentview as fallback since no dedicated front camera)
+    # - left: left wrist camera
+    # - right: right wrist camera
     return {
         "state": state,
         "images": {
-            "cam_high": process_img(robosuite_obs["agentview_image"]),
-            "cam_left_wrist": process_img(robosuite_obs["robot0_wrist_cam_left_image"]),
-            "cam_right_wrist": process_img(robosuite_obs["robot0_wrist_cam_right_image"]),
+            "top": process_img(robosuite_obs["agentview_image"]),
+            "front": process_img(robosuite_obs["agentview_image"]),  # Duplicate as fallback
+            "left": process_img(robosuite_obs["robot0_wrist_cam_left_image"]),
+            "right": process_img(robosuite_obs["robot0_wrist_cam_right_image"]),
         },
         "prompt": task_description,
     }
