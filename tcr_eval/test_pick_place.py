@@ -21,8 +21,8 @@ def evaluate_twoarmlift(n_episodes=20, horizon=500):
             has_offscreen_renderer=True,           # Required for camera observations
             use_camera_obs=True,                   # Enable camera observations
             camera_names=["agentview", "robot0_wrist_cam_right", "robot0_wrist_cam_left"],
-            camera_heights=512,
-            camera_widths=512,
+            camera_heights=[512, 512, 512],  # Different heights per camera
+            camera_widths=[1586, 512, 512],  # agentview: 1586 for 128° horizontal FOV, others: 512
             camera_depths=False,                   # Set to True for RGB-D
             use_object_obs=True,
             reward_shaping=True,
@@ -31,6 +31,16 @@ def evaluate_twoarmlift(n_episodes=20, horizon=500):
         )
 
         obs = env.reset()
+        
+        # Adjust agentview camera: Set to 67° vertical FOV (128° horizontal with aspect ratio 3.098)
+        agentview_cam_id = env.sim.model.camera_name2id("agentview")
+        # Move camera further back (increase x position) - original is around 0.5, move to 1.2
+        env.sim.model.cam_pos[agentview_cam_id][0] = 1.2  # x position (further back)
+        env.sim.model.cam_pos[agentview_cam_id][2] = 1.5  # z position (slightly higher)
+        # Set vertical FOV to 67 degrees (horizontal will be 128° with width=1586, height=512)
+        env.sim.model.cam_fovy[agentview_cam_id] = 67.0
+        env.sim.forward()  # Update simulation
+        
         episode_reward = 0
         
         for step in range(horizon):
